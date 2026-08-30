@@ -16,14 +16,17 @@
 # You should have received a copy of the GNU General Public License
 # along with pyXem.  If not, see <http://www.gnu.org/licenses/>.
 
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Optional, Union, Literal
 
 from hyperspy.signals import Signal1D, Signal2D
 from pyxem.signals import Diffraction2D
 from hyperspy._signals.lazy import LazySignal
 
+
 if TYPE_CHECKING:
     from pyxem.signals.correlation2d import Correlation2D
+    from pyxem.signals.ttcf import TwoTimeCorrelationFunction
+    from pyxem.signals.insitu_polar_diffraction2d import InSituPolarDiffraction2D, LazyInSituPolarDiffraction2D
 
 import numpy as np
 from hyperspy.roi import RectangularROI
@@ -39,8 +42,16 @@ from pyxem.utils._insitu import (
     _g2_2d,
     _interpolate_g2_2d,
     _get_resample_time,
+    _bkg_calc,
+    _find_time_axis,
 )
 import pyxem.utils._pixelated_stem_tools as pst
+
+def _compute_ttcf(data):
+    nt = data.shape[0]
+    data = data.reshape(nt, -1)
+    ttcf = data @ data.T / data.shape[1]
+    return ttcf
 
 
 class InSituDiffraction2D(Diffraction2D):
@@ -389,6 +400,108 @@ class InSituDiffraction2D(Diffraction2D):
         g2kt.set_signal_type("correlation")
 
         return g2kt
+
+    
+
+    def expected_intensity(
+            self,
+            method: Literal["t", "k", "custom"] = "t",
+            custom_axes: dict | None = None,
+            chunk_optimize: bool = False,
+            center: Literal["mean", "median"] = "mean",
+            **kwargs
+            ) -> "InSituDiffraction2D":
+        """
+        Calculate the expected intensity in the time series using the specified method. Signal is transposed so that time axis is the last signal axis (first axis of the signal ndarray)
+        
+        Parameters
+        ----------
+        method : Literal["t", "k", "custom"], default="t"
+            The method to use for calculating the expected intensity.
+            The "t" method calculates the expected intensity at each time and scattering position using the time axis, "k" uses all non-time axes, and "custom" uses the user-specified axes.
+        custom_axes : dict | None, default=None
+            Custom axes specification for the "custom" method. Should be a dictionary with keys 'full_axis', 'local_axis', and 'local_size' specifying the axes and local size for the background calculation.
+            The values for 'full_axis' and 'local_axis' should be integers or lists of integers specifying the axes along which to calculate the background and apply the local filter, respectively. The indexing is the ndarray indexing after the intial transpose of the signal to have only the spatial axes in the navigation axes.
+        chunk_optimize : bool, default=False
+            Whether to optimize the chunking of the signal for computation after initial transpose of the signal. This can improve performance for large lazy datasets if the chunking is not optimize to iterate over the spatial axes.
+        center : Literal["mean", "median"], default="mean"
+            The method to use for calculating the expected intensity. "mean" uses the mean, while "median" uses the median. This is passed to the `_bkg_calc` function for background calculation.
+        **kwargs : dict
+            Additional keyword arguments passed to the scipy.ndimage.uniform_filter function when applying the local uniform filter for background calculation.
+            
+        Returns
+        -------
+        InSituDiffraction2D
+            The expected intensity signal.
+        """
+        time_axis = _find_time_axis(self)
+        if time_axis != 2:
+            s_ = self.roll_time_axis(time_axis)
+        else:
+            s_ = self
+
+        signal_T = s_.transpose(navigation_axes=[0,1], optimize=chunk_optimize)
+        
+        if method == 't':
+            bkg_T = signal_T.map(_bkg_calc, axis=0, local_axis=None, inplace=False, center=center)
+
+        elif method == 'k':
+            bkg_T = signal_T.map(_bkg_calc, axis=[1,2], local_axis=None, inplace=False, center=center)
+        elif method == 'custom':
+            if custom_axes is None:
+                raise ValueError("For 'custom' method, 'custom_axes' must be provided")
+            bkg_T = signal_T.map(_bkg_calc, axis=custom_axes.get('full_axis', None), local_axis=custom_axes.get('local_axis', None), local_size=custom_axes.get('local_size', None), inplace=False, center=center, **kwargs)
+        else:
+            raise ValueError("Method must be one of 't', 'k', or 'custom'")
+
+        bkg = bkg_T.transpose(navigation_axes=[0,1,4])
+
+        return bkg
+
+    def get_TTCF(self) -> "TwoTimeCorrelationFunction":
+        """
+        Compute the two-time correlation function (TTCF) of the signal.
+
+        Returns
+        -------
+        TwoTimeCorrelationFunction
+            The computed TTCF signal.
+        """
+        time_axis = _find_time_axis(self)
+        tax = self.axes_manager.navigation_axes[time_axis]
+
+        if time_axis != 2:
+            signal_T = self.roll_time_axis(time_axis).transpose(navigation_axes=[0,1], optimize=False)
+        else:
+            signal_T = self.transpose(navigation_axes=[0,1], optimize=False)
+
+
+        ttcf_signal = signal_T.map(_compute_ttcf, inplace=False)
+        for ax in ttcf_signal.axes_manager.signal_axes:
+            ax.name = tax.name
+            ax.units = tax.units
+            ax.offset = tax.offset
+            ax.scale = tax.scale
+        ttcf_signal.set_signal_type("ttcf")
+        return ttcf_signal
+
+    def get_azimuthal_integral2d(self, *args, **kwargs)-> "InSituPolarDiffraction2D":
+        """Perform 2D azimuthal integration and return an InSituPolarDiffraction2D signal."""
+        # 1. Execute parent Diffraction2D azimuthal integration logic
+        res = super().get_azimuthal_integral2d(*args, **kwargs)
+
+        # 2. Handle 'inplace=True' vs returned signal
+        if kwargs.get("inplace", False):
+            self.set_signal_type("insitu_polar")
+            return None
+
+        # 3. Handle returned transformed signal
+        if res is not None:
+            
+            res.set_signal_type("insitu_polar")
+
+        return res
+        
 
 
 class LazyInSituDiffraction2D(LazySignal, InSituDiffraction2D):

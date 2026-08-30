@@ -476,6 +476,88 @@ class PolarDiffraction2D(CommonDiffraction, Signal2D):
         orientation.units = ["a.u.", "a.u.", "deg", "a.u."]
         return orientation
 
+    def get_beam_stop(
+            self,
+            start_point: list[int] | None = None,
+                      ) -> np.ndarray:
+        """
+        Retrieve the beam stop mask for the averaged diffraction pattern.
+
+        Returns
+        -------
+        np.ndarray
+            A boolean array indicating the beam stop region.
+        """
+        from scipy.ndimage import label
+        from skimage.filters import sobel, threshold_otsu
+        from skimage.morphology import binary_dilation, disk
+
+        if start_point is None:
+            start_point = [0, 0]
+
+        avg_dp = self.mean(axis='nav').data
+        # check if avg_dp is dask array and compute if necessary
+        if hasattr(avg_dp, "compute"):
+            avg_dp = avg_dp.compute()
+
+        edges = sobel(avg_dp)
+        thresh = threshold_otsu(edges)
+        binary = edges > thresh
+        binary = binary_dilation(binary, disk(3))
+        binary_inv = np.logical_not(binary)
+        labeled_inv, _ = label(binary_inv)
+        start_label = labeled_inv[start_point[0], start_point[1]]
+        beam_stop_mask = labeled_inv == start_label
+        beam_stop_mask = binary_dilation(beam_stop_mask, disk(3))
+        return beam_stop_mask
+
+    def remove_beam_stop_area(
+            self,
+            beam_stop_mask: np.ndarray | None = None,
+            start_point: list[int] | None = None,
+            exclude_angle: float | None = None
+    ) -> "PolarDiffraction2D":
+        """
+        Remove the beam stop area from the diffraction pattern using the provided mask.
+
+        Parameters
+        ----------
+        beam_stop_mask : np.ndarray | None
+            The mask indicating the beam stop region. If None, it will be computed.
+        start_point : list[int] | None
+            The starting point for beam stop detection if the mask needs to be computed.
+        exclude_angle : float | None
+            The total angular range to exclude around the beam stop, if applicable. Data on each side of the beam stop within half of this angular range will be excluded. 8 extra degree will be added to the total angular range to ensure sufficient exclusion. Defaults to None, meaning only the default 8 degrees will be excluded.
+
+        Returns
+        -------
+        PolarDiffraction2D
+            The polar_diffraction signal with with the beam stop area removed.
+        """
+        if exclude_angle is None:
+            exclude_angle = 8.0
+        else:
+            exclude_angle += 8.0
+
+        azi_size = self.axes_manager.signal_axes[0].size
+        exclude_pix = int(exclude_angle / 360.0 * azi_size)
+        half_exclude_pix = (exclude_pix+1) // 2
+
+        if beam_stop_mask is None:
+            beam_stop_mask = self.get_beam_stop(start_point=start_point)
+
+        bs_line = np.any(beam_stop_mask, axis=0)
+        bs_inds = (np.min(np.where(bs_line)) - half_exclude_pix, np.max(np.where(bs_line)) + half_exclude_pix + 1)
+
+        def _beam_stop_rm(data: np.ndarray, bs_inds: tuple[int, int]) -> np.ndarray:
+            bs_l, bs_r = bs_inds
+            dataroi_l = data[..., :bs_l]
+            dataroi_r = data[..., bs_r:]
+            data = np.append(dataroi_r, dataroi_l, axis=-1)
+            return data
+        
+        return self.map(_beam_stop_rm, bs_inds=bs_inds, inplace=False)
+
 
 class LazyPolarDiffraction2D(LazySignal, PolarDiffraction2D):
     pass

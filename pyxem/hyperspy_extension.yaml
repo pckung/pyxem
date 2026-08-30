@@ -275,6 +275,42 @@ signals:
     dtype: real
     lazy: True
     module: pyxem.signals.insitu_diffraction2d
+  InSituPolarDiffraction2D:
+    signal_type: insitu_polar
+    signal_dimension: 2
+    dtype: real
+    lazy: False
+    module: pyxem.signals.insitu_polar_diffraction2d
+  LazyInSituPolarDiffraction2D:
+    signal_type: insitu_polar
+    signal_dimension: 2
+    dtype: real
+    lazy: True
+    module: pyxem.signals.insitu_polar_diffraction2d
+  TwoTimeCorrelationFunction:
+    signal_type: ttcf
+    signal_dimension: 2
+    dtype: real
+    lazy: False
+    module: pyxem.signals.two_time_correlation_function
+  LazyTwoTimeCorrelationFunction:
+    signal_type: ttcf
+    signal_dimension: 2
+    dtype: real
+    lazy: True
+    module: pyxem.signals.two_time_correlation_function
+  OneTimeCorrelationFunction:
+    signal_type: otcf
+    signal_dimension: 1
+    dtype: real
+    lazy: False
+    module: pyxem.signals.one_time_correlation_function
+  LazyOneTimeCorrelationFunction:
+    signal_type: otcf
+    signal_dimension: 1
+    dtype: real
+    lazy: True
+    module: pyxem.signals.one_time_correlation_function
 
 components1D:
     ReducedIntensityCorrectionComponent:

@@ -21,6 +21,8 @@
 import numpy as np
 import scipy.ndimage as ndi
 import scipy.signal as ss
+from scipy.ndimage import uniform_filter
+from typing import Literal
 
 
 def _register_drift_5d(data, shifts1, shifts2, order=1):
@@ -202,3 +204,136 @@ def _interpolate_g2_2d(g2, t_rs, dt):
         g2_l + (g2_h - g2_l) * (t - np.floor(t).astype(int))[:, np.newaxis, np.newaxis]
     )
     return g2_rs
+
+def _interpolate_g2_1d(g2, t_rs, dt):
+    """
+    Interpolate 1D g2(t) based on resampled time
+
+    Parameters
+    ----------
+    g2: 1D np.array
+        Time correlation function g2(t)
+    t_rs: 1D np.array
+        Resampled time axis array
+    dt: float
+        Time interval for original g2 function
+
+    Returns
+    -------
+    g2rs: 1D np.array
+        Resampled time correlation function g2(t)
+    """
+    t = np.round(t_rs / dt, 8)
+    g2_l = g2[np.floor(t).astype(int)]
+    g2_h = g2[np.ceil(t).astype(int)]
+    g2_rs = g2_l + (g2_h - g2_l) * (t - np.floor(t).astype(int))
+    return g2_rs
+
+def _bkg_calc(
+    data: np.ndarray,
+    axis: list | int,
+    local_axis: list | int | None = None,
+    local_size: list | int | None = None,
+    center: Literal["mean", "median"] = "mean",
+    **kwargs,
+):
+    """Calculate the background by taking the mean along the specified axis and expend to original shape.
+    
+    Parameters
+    ----------
+    data : np.ndarray
+        The data array from which to calculate the background.
+    axis : list | int
+        The axis or axes along which to calculate the mean background.
+    local_axis : list | int | None, optional
+        The axis or axes along which to apply a local uniform filter, by default None.
+    local_size : int, optional
+        The size of the local uniform filter, by default 3.
+    **kwargs : dict
+        Additional keyword arguments passed to the filtering function.
+
+    Returns
+    -------
+    np.ndarray
+        The calculated background array, broadcasted to the shape of the input data.
+
+    """
+    if axis is not None:
+        if isinstance(axis, int):
+            axis = [axis]
+        if center == "median":
+            mean = np.nanmedian(data, axis=tuple(axis), keepdims=True)
+        else:
+            mean = np.nanmean(data, axis=tuple(axis), keepdims=True)
+        bkg = np.broadcast_to(mean, data.shape)
+    else:
+        bkg = data.copy()
+    if local_axis is not None:
+        n_dim = data.ndim
+        if isinstance(local_axis, int):
+            local_axis = [local_axis]
+        filter_size = [1] * n_dim
+        if local_size is None:
+            local_sizes = [3] * len(local_axis)
+        elif isinstance(local_size, int):
+            local_sizes = [local_size] * len(local_axis)
+        elif isinstance(local_size, list):
+            local_sizes = local_size
+        else:
+            raise TypeError("'local_size' must be int, list, or None")
+        for ax, sz in zip(local_axis, local_sizes):
+            filter_size[ax] = sz
+        bkg = uniform_filter(bkg, size=filter_size, **kwargs)
+    return bkg
+
+def _find_time_axis(signal, nav=True) -> int:
+        time_axis_names = ["time", "t", "Time", "T"]
+        axes = signal.axes_manager.navigation_axes if nav else signal.axes_manager.signal_axes
+        for i, ax in enumerate(axes):
+            if ax.name in time_axis_names:
+                time_axis_index = i
+                break
+        else:
+            raise ValueError(f"Time axis not found, name should be one of {time_axis_names}")
+        return time_axis_index
+
+def _ttcf_2_g2(data: np.ndarray) -> np.ndarray:
+    """Fast, NaN-aware 1D g2 calculation using numpy.nanmean along diagonals."""
+    nt = data.shape[0]
+    g2 = np.empty(nt)
+    
+    # Loop over time-lags (diagonals)
+    for offset in range(nt):
+        # Extract the k-th upper diagonal (representing a constant time lag)
+        diag = np.diagonal(data, offset=offset)
+        
+        # Calculate mean ignoring NaNs
+        # np.nanmean handles summing and count tracking in C
+        g2[offset] = np.nanmean(diag)
+        
+    return g2
+
+def _ttcf_2_c2(data, window: int = 100, size: int | None = None) -> np.ndarray:
+    """Convert a two-time correlation function (ttcf) to a series of c2 windows.
+    
+    Parameters
+    ----------
+    data : np.ndarray
+        The two-time correlation function data.
+    window : int, optional
+        The size of the delay time window to extract from the ttcf, by default 100. 
+    size : int, optional
+        The size of the uniform filter to apply to the c2 windows along the wait time, by default None.
+
+    Returns
+    -------
+    np.ndarray
+        The extracted c2 windows, optionally smoothed with a uniform filter.
+    """
+    c2_windows = np.zeros((len(data) - window + 1, window))
+    for i in range(len(data) - window + 1):
+        c2_windows[i] = data[i, i : i + window]
+
+    if size is not None:
+        c2_windows = uniform_filter(c2_windows, size=(size, 0), mode="mirror")
+    return c2_windows
