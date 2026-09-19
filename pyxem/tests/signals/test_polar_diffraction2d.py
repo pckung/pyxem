@@ -277,3 +277,209 @@ class TestSubtractingDiffractionBackground:
         subtracted = noisy_data.subtract_diffraction_background(method=method, **kwargs)
         assert isinstance(subtracted, PolarDiffraction2D)
         assert subtracted.data.shape == noisy_data.data.shape
+
+
+class TestBeamStop:
+    n_k = 30
+    n_azi = 180  # 2 degrees per azimuthal pixel
+    stripe = slice(80, 100)  # azimuthal columns hidden behind the beam stop
+
+    @pytest.fixture
+    def signal(self):
+        data = 100 + np.random.default_rng(seed=0).random((3, 4, self.n_k, self.n_azi))
+        data[..., self.stripe] = 0.0
+        return PolarDiffraction2D(data)
+
+    @pytest.fixture
+    def index_signal(self):
+        # every value is its own azimuthal index, so the columns that are kept,
+        # and their order, can be read directly from the output
+        data = np.broadcast_to(
+            np.arange(self.n_azi, dtype=float), (2, 3, self.n_k, self.n_azi)
+        ).copy()
+        return PolarDiffraction2D(data)
+
+    @pytest.fixture
+    def seam_signal(self):
+        # the beam stop crosses the 0/360 degree seam: columns 170-179 and 0-9
+        data = 100 + np.random.default_rng(seed=1).random((3, 4, self.n_k, self.n_azi))
+        data[..., 170:] = 0.0
+        data[..., :10] = 0.0
+        return PolarDiffraction2D(data)
+
+    def _mask(self, start, stop):
+        mask = np.zeros((self.n_k, self.n_azi), dtype=bool)
+        mask[:, start:stop] = True
+        return mask
+
+    def test_get_beam_stop_type_and_shape(self, signal):
+        mask = signal.get_beam_stop()
+        assert isinstance(mask, np.ndarray)
+        assert mask.dtype == bool
+        assert mask.shape == (self.n_k, self.n_azi)
+
+    def test_get_beam_stop_finds_stripe(self, signal):
+        mask = signal.get_beam_stop()
+        assert mask[:, 85:95].all()
+        assert not mask[:, :70].any()
+        assert not mask[:, 110:].any()
+        # a beam stop hides whole azimuthal columns, at every radius
+        np.testing.assert_array_equal(mask.any(axis=0), mask.all(axis=0))
+
+    def test_get_beam_stop_default_start_point_is_centre(self, signal):
+        default = signal.get_beam_stop()
+        explicit = signal.get_beam_stop(start_point=[self.n_k // 2, self.n_azi // 2])
+        np.testing.assert_array_equal(default, explicit)
+
+    def test_get_beam_stop_start_point_selects_region(self, signal):
+        # starting in the background selects the background, not the stripe
+        mask = signal.get_beam_stop(start_point=[15, 40])
+        assert mask[15, 40]
+        assert not mask[:, self.stripe].any()
+
+    @pytest.mark.parametrize("start_point", [[5, 86], [25, 94], [0, 90]])
+    def test_get_beam_stop_same_from_any_point_inside(self, signal, start_point):
+        np.testing.assert_array_equal(
+            signal.get_beam_stop(start_point=start_point), signal.get_beam_stop()
+        )
+
+    @pytest.mark.parametrize("start_point", [[15, 3], [15, 175]])
+    def test_get_beam_stop_across_seam(self, seam_signal, start_point):
+        mask = seam_signal.get_beam_stop(start_point=start_point)
+        # both halves of the beam stop are found, whichever side is picked
+        assert mask[:, 175:].all()
+        assert mask[:, :5].all()
+        assert not mask[:, 20:160].any()
+        np.testing.assert_array_equal(mask.any(axis=0), mask.all(axis=0))
+
+    def test_get_beam_stop_across_seam_same_from_either_side(self, seam_signal):
+        np.testing.assert_array_equal(
+            seam_signal.get_beam_stop(start_point=[15, 3]),
+            seam_signal.get_beam_stop(start_point=[15, 175]),
+        )
+
+    @pytest.mark.parametrize("start_point", [[-1, 90], [30, 90], [15, -1], [15, 180]])
+    def test_get_beam_stop_start_point_outside(self, signal, start_point):
+        with pytest.raises(ValueError, match="outside the pattern"):
+            signal.get_beam_stop(start_point=start_point)
+
+    def test_get_beam_stop_start_point_on_edge(self, signal):
+        # column 80 is the edge between the background and the beam stop
+        with pytest.raises(ValueError, match="edge"):
+            signal.get_beam_stop(start_point=[15, 80])
+
+    def test_get_beam_stop_lazy(self, signal):
+        mask = signal.get_beam_stop()
+        lazy_mask = signal.as_lazy().get_beam_stop()
+        assert isinstance(lazy_mask, np.ndarray)
+        np.testing.assert_array_equal(lazy_mask, mask)
+
+    @pytest.mark.parametrize(
+        "exclude_angle, half_exclude_pix",
+        [
+            (None, 2),  # 8 degrees -> 4 pixels
+            (20.0, 7),  # 20 + 8 degrees -> 14 pixels
+        ],
+    )
+    def test_remove_beam_stop_area_columns(
+        self, index_signal, exclude_angle, half_exclude_pix
+    ):
+        mask = self._mask(80, 100)
+        out = index_signal.remove_beam_stop_area(
+            beam_stop_mask=mask, exclude_angle=exclude_angle
+        )
+        left = 80 - half_exclude_pix
+        right = 99 + half_exclude_pix + 1
+        # the data now starts just after the beam stop and wraps round to it
+        expected = np.concatenate([np.arange(right, self.n_azi), np.arange(0, left)])
+        assert out.data.shape[-1] == self.n_azi - (right - left)
+        np.testing.assert_array_equal(
+            out.data, np.broadcast_to(expected, out.data.shape)
+        )
+
+    def test_remove_beam_stop_area_type_and_axes(self, index_signal):
+        out = index_signal.remove_beam_stop_area(beam_stop_mask=self._mask(80, 100))
+        assert isinstance(out, PolarDiffraction2D)
+        assert out.axes_manager.navigation_shape == (
+            index_signal.axes_manager.navigation_shape
+        )
+        # only the azimuthal axis shrinks
+        assert out.axes_manager.signal_axes[1].size == self.n_k
+        assert out.axes_manager.signal_axes[0].size < self.n_azi
+
+    def test_remove_beam_stop_area_does_not_modify_inputs(self, index_signal):
+        data = index_signal.data.copy()
+        mask = self._mask(80, 100)
+        index_signal.remove_beam_stop_area(beam_stop_mask=mask)
+        np.testing.assert_array_equal(index_signal.data, data)
+        np.testing.assert_array_equal(mask, self._mask(80, 100))
+
+    def test_remove_beam_stop_area_computes_mask(self, signal):
+        out = signal.remove_beam_stop_area(exclude_angle=10.0)
+        assert not (out.data == 0).any()
+        explicit = signal.remove_beam_stop_area(
+            beam_stop_mask=signal.get_beam_stop(), exclude_angle=10.0
+        )
+        np.testing.assert_array_equal(out.data, explicit.data)
+
+    def test_remove_beam_stop_area_forwards_start_point(self, signal):
+        out = signal.remove_beam_stop_area(start_point=[15, 40])
+        explicit = signal.remove_beam_stop_area(
+            beam_stop_mask=signal.get_beam_stop(start_point=[15, 40])
+        )
+        np.testing.assert_array_equal(out.data, explicit.data)
+        # a different start point selects a different region
+        default = signal.remove_beam_stop_area()
+        assert out.data.shape != default.data.shape
+
+    def test_remove_beam_stop_area_lazy(self, signal):
+        eager = signal.remove_beam_stop_area(exclude_angle=10.0)
+        lazy = signal.as_lazy().remove_beam_stop_area(exclude_angle=10.0)
+        assert isinstance(lazy, LazyPolarDiffraction2D)
+        lazy.compute()
+        np.testing.assert_array_equal(lazy.data, eager.data)
+
+    @pytest.mark.parametrize(
+        "mask_columns, expected",
+        [
+            # each side of the beam stop loses 2 pixels (8 degrees) of margin
+            (np.r_[80:100], np.r_[102:180, 0:78]),
+            (np.r_[0:10], np.r_[12:178]),  # margin wraps to the end of the axis
+            (np.r_[170:180], np.r_[2:168]),  # margin wraps to the start of the axis
+            (np.r_[175:180, 0:5], np.r_[7:173]),  # beam stop crosses the seam
+        ],
+        ids=["middle", "start", "end", "seam"],
+    )
+    def test_remove_beam_stop_area_periodic(
+        self, index_signal, mask_columns, expected
+    ):
+        mask = np.zeros((self.n_k, self.n_azi), dtype=bool)
+        mask[:, mask_columns] = True
+        out = index_signal.remove_beam_stop_area(beam_stop_mask=mask)
+        assert out.data.shape[-1] <= self.n_azi
+        np.testing.assert_array_equal(
+            out.data, np.broadcast_to(expected, out.data.shape)
+        )
+
+    def test_remove_beam_stop_area_computes_mask_across_seam(self, seam_signal):
+        out = seam_signal.remove_beam_stop_area(start_point=[15, 3], exclude_angle=10.0)
+        assert not (out.data == 0).any()
+        assert out.data.shape[-1] < self.n_azi - 20
+
+    def test_remove_beam_stop_area_keeps_one_column(self, index_signal):
+        # 175 beam stop columns and 2 pixels of margin either side leaves column 177
+        out = index_signal.remove_beam_stop_area(beam_stop_mask=self._mask(0, 175))
+        np.testing.assert_array_equal(out.data, np.full_like(out.data, 177))
+
+    def test_remove_beam_stop_area_covers_everything(self, index_signal):
+        with pytest.raises(ValueError, match="whole azimuthal range"):
+            index_signal.remove_beam_stop_area(beam_stop_mask=self._mask(0, 176))
+
+    def test_remove_beam_stop_area_empty_mask(self, index_signal):
+        with pytest.raises(ValueError, match="does not contain any"):
+            index_signal.remove_beam_stop_area(beam_stop_mask=self._mask(0, 0))
+
+    def test_remove_beam_stop_area_wrong_mask_shape(self, index_signal):
+        mask = np.ones((self.n_k, self.n_azi + 1), dtype=bool)
+        with pytest.raises(ValueError, match="shape"):
+            index_signal.remove_beam_stop_area(beam_stop_mask=mask)

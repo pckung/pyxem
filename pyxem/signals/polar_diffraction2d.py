@@ -48,6 +48,34 @@ from pyxem.utils._background_subtraction import (
 )
 
 
+def _circular_span(columns: np.ndarray) -> tuple[int, int]:
+    """Find the shortest circular interval that contains every True element.
+
+    Parameters
+    ----------
+    columns : np.ndarray
+        A non-empty 1D boolean array, treated as periodic.
+
+    Returns
+    -------
+    start, width : int
+        The first index of the interval and its length. The interval covers
+        ``start, start + 1, ..., start + width - 1``, modulo ``columns.size``.
+    """
+    n = columns.size
+    idx = np.flatnonzero(columns)
+    # the number of False elements between each True element and the next one
+    gaps = np.diff(np.append(idx, idx[0] + n)) - 1
+    largest = np.argmax(gaps)
+    start = idx[(largest + 1) % idx.size]
+    return int(start), int(n - gaps[largest])
+
+
+def _take_azimuthal(data: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """Select ``indices`` along the last (azimuthal) axis."""
+    return data[..., indices]
+
+
 class PolarDiffraction2D(CommonDiffraction, Signal2D):
     """Signal class for two-dimensional diffraction data in polar coordinates.
 
@@ -477,66 +505,114 @@ class PolarDiffraction2D(CommonDiffraction, Signal2D):
         return orientation
 
     def get_beam_stop(
-            self,
-            start_point: list[int] | None = None,
-                      ) -> np.ndarray:
+        self,
+        start_point: Optional[list[int]] = None,
+    ) -> np.ndarray:
         """
         Retrieve the beam stop mask for the averaged diffraction pattern.
+
+        The averaged pattern is edge-filtered and thresholded, and the beam stop
+        is the region enclosed by those edges that contains ``start_point``. The
+        azimuthal axis is treated as periodic, so a beam stop that crosses the
+        0/360 degree seam is returned as a single region.
+
+        Parameters
+        ----------
+        start_point : list[int], optional
+            The ``[radial, azimuthal]`` pixel index of a point inside the beam
+            stop. It must not lie on an edge of the averaged pattern. Defaults
+            to the centre of the pattern.
 
         Returns
         -------
         np.ndarray
-            A boolean array indicating the beam stop region.
+            A boolean array with the shape of the signal, ``(radial, azimuthal)``,
+            marking the beam stop region.
+
+        Raises
+        ------
+        ValueError
+            If ``start_point`` is outside the pattern, or lies on an edge and so
+            does not belong to any region.
         """
-        from scipy.ndimage import label
+        from scipy.ndimage import binary_dilation, label
         from skimage.filters import sobel, threshold_otsu
-        from skimage.morphology import binary_dilation, disk
+        from skimage.morphology import disk
 
-        
-
-        avg_dp = self.mean(axis='nav').data
-        dp_shape = avg_dp.shape
-        
-        if start_point is None:
-            start_point = [dp_shape[0] // 2, dp_shape[1] // 2]
-
+        avg_dp = self.mean(axis="nav").data
         # check if avg_dp is dask array and compute if necessary
         if hasattr(avg_dp, "compute"):
             avg_dp = avg_dp.compute()
+        n_rad, n_azi = avg_dp.shape
+
+        if start_point is None:
+            start_point = [n_rad // 2, n_azi // 2]
+        start_rad, start_azi = start_point
+        if not (0 <= start_rad < n_rad and 0 <= start_azi < n_azi):
+            raise ValueError(
+                f"`start_point` {list(start_point)} is outside the pattern, "
+                f"which has shape {(n_rad, n_azi)}."
+            )
+
+        # The azimuthal axis is periodic. Rolling the start point to the centre
+        # keeps a beam stop that crosses the 0/360 degree seam in one piece.
+        shift = n_azi // 2 - start_azi
+        avg_dp = np.roll(avg_dp, shift, axis=1)
 
         edges = sobel(avg_dp)
         thresh = threshold_otsu(edges)
-        binary = edges > thresh
-        binary = binary_dilation(binary, disk(3))
-        binary_inv = np.logical_not(binary)
-        labeled_inv, _ = label(binary_inv)
-        start_label = labeled_inv[start_point[0], start_point[1]]
-        beam_stop_mask = labeled_inv == start_label
-        beam_stop_mask = binary_dilation(beam_stop_mask, disk(3))
-        return beam_stop_mask
+        binary = binary_dilation(edges > thresh, structure=disk(3))
+        labeled_inv, _ = label(np.logical_not(binary))
+        start_label = labeled_inv[start_rad, n_azi // 2]
+        if start_label == 0:
+            raise ValueError(
+                f"`start_point` {list(start_point)} lies on an edge of the averaged "
+                "pattern, so it does not belong to a region. Choose a point inside "
+                "the beam stop."
+            )
+        beam_stop_mask = binary_dilation(labeled_inv == start_label, structure=disk(3))
+        return np.roll(beam_stop_mask, -shift, axis=1)
 
     def remove_beam_stop_area(
-            self,
-            beam_stop_mask: np.ndarray | None = None,
-            start_point: list[int] | None = None,
-            exclude_angle: float | None = None
+        self,
+        beam_stop_mask: Optional[np.ndarray] = None,
+        start_point: Optional[list[int]] = None,
+        exclude_angle: Optional[float] = None,
     ) -> "PolarDiffraction2D":
         """
         Remove the beam stop area from the diffraction pattern using the provided mask.
 
+        The azimuthal axis is treated as periodic, so the beam stop and the
+        excluded margin around it may cross the 0/360 degree seam. The remaining
+        data starts at the first azimuthal pixel after the removed area, so the
+        azimuthal axis is shortened and also rolled.
+
         Parameters
         ----------
-        beam_stop_mask : np.ndarray | None
-            The mask indicating the beam stop region. If None, it will be computed.
-        start_point : list[int] | None
-            The starting point for beam stop detection if the mask needs to be computed.
-        exclude_angle : float | None
-            The total angular range to exclude around the beam stop, if applicable. Data on each side of the beam stop within half of this angular range will be excluded. 8 extra degree will be added to the total angular range to ensure sufficient exclusion. Defaults to None, meaning only the default 8 degrees will be excluded.
+        beam_stop_mask : np.ndarray, optional
+            The mask indicating the beam stop region, with the shape of the
+            signal ``(radial, azimuthal)``. If None, it is computed with
+            :meth:`get_beam_stop`.
+        start_point : list[int], optional
+            The ``[radial, azimuthal]`` starting point for beam stop detection if
+            the mask needs to be computed.
+        exclude_angle : float, optional
+            The total angular range to exclude around the beam stop, in degrees.
+            Data on each side of the beam stop within half of this angular range
+            will be excluded. 8 extra degrees are added to the total angular
+            range to ensure sufficient exclusion. Defaults to None, meaning only
+            the default 8 degrees will be excluded.
 
         Returns
         -------
         PolarDiffraction2D
-            The polar_diffraction signal with with the beam stop area removed.
+            The polar diffraction signal with the beam stop area removed.
+
+        Raises
+        ------
+        ValueError
+            If ``beam_stop_mask`` has the wrong shape or no beam stop pixels, or
+            if the area to remove covers the whole azimuthal range.
         """
         if exclude_angle is None:
             exclude_angle = 8.0
@@ -545,22 +621,30 @@ class PolarDiffraction2D(CommonDiffraction, Signal2D):
 
         azi_size = self.axes_manager.signal_axes[0].size
         exclude_pix = int(exclude_angle / 360.0 * azi_size)
-        half_exclude_pix = (exclude_pix+1) // 2
+        half_exclude_pix = (exclude_pix + 1) // 2
 
         if beam_stop_mask is None:
             beam_stop_mask = self.get_beam_stop(start_point=start_point)
+        beam_stop_mask = np.asarray(beam_stop_mask)
+        if beam_stop_mask.shape != self.data.shape[-2:]:
+            raise ValueError(
+                f"`beam_stop_mask` has shape {beam_stop_mask.shape} but must have "
+                f"the shape of the signal, {self.data.shape[-2:]}."
+            )
+        bs_columns = np.any(beam_stop_mask, axis=0)
+        if not bs_columns.any():
+            raise ValueError("`beam_stop_mask` does not contain any beam stop pixels.")
 
-        bs_line = np.any(beam_stop_mask, axis=0)
-        bs_inds = (np.min(np.where(bs_line)) - half_exclude_pix, np.max(np.where(bs_line)) + half_exclude_pix + 1)
+        bs_start, bs_width = _circular_span(bs_columns)
+        n_excluded = bs_width + 2 * half_exclude_pix
+        if n_excluded >= azi_size:
+            raise ValueError(
+                "The beam stop and the excluded angle cover the whole azimuthal range."
+            )
+        first_kept = bs_start + bs_width + half_exclude_pix
+        keep = (first_kept + np.arange(azi_size - n_excluded)) % azi_size
 
-        def _beam_stop_rm(data: np.ndarray, bs_inds: tuple[int, int]) -> np.ndarray:
-            bs_l, bs_r = bs_inds
-            dataroi_l = data[..., :bs_l]
-            dataroi_r = data[..., bs_r:]
-            data = np.append(dataroi_r, dataroi_l, axis=-1)
-            return data
-        
-        return self.map(_beam_stop_rm, bs_inds=bs_inds, inplace=False)
+        return self.map(_take_azimuthal, indices=keep, inplace=False)
 
 
 class LazyPolarDiffraction2D(LazySignal, PolarDiffraction2D):
