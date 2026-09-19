@@ -25,7 +25,7 @@ from hyperspy._signals.lazy import LazySignal
 
 if TYPE_CHECKING:
     from pyxem.signals.correlation2d import Correlation2D
-    from pyxem.signals.ttcf import TwoTimeCorrelationFunction
+    from pyxem.signals.two_time_correlation_function import TwoTimeCorrelationFunction
     from pyxem.signals.insitu_polar_diffraction2d import InSituPolarDiffraction2D, LazyInSituPolarDiffraction2D
 
 import numpy as np

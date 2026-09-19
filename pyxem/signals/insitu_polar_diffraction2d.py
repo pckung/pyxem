@@ -24,7 +24,7 @@ from hyperspy._signals.lazy import LazySignal
 
 if TYPE_CHECKING:
     from pyxem.signals.correlation2d import Correlation2D
-    from pyxem.signals.ttcf import TwoTimeCorrelationFunction
+    from pyxem.signals.two_time_correlation_function import TwoTimeCorrelationFunction
 
 import numpy as np
 
