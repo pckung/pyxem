@@ -73,18 +73,19 @@ class TwoTimeCorrelationFunction(Diffraction2D):
             ax.scale = tax.scale
             ax.offset = tax.offset
 
-        navigation_shape = self.axes_manager.navigation_shape
-        navigation_axes_len = len(navigation_shape)
-        if navigation_axes_len > 0:
-            c2_signal = c2_signal.transpose(navigation_axes=[0,1,3])
-        else:
-            c2_signal = c2_signal.transpose(navigation_axes=[1])
-        if size is not None:
-            edge = size // 2
-            if navigation_axes_len > 0:
-                c2_signal = c2_signal.inav[:,:,edge:-edge]
-            else:
-                c2_signal = c2_signal.inav[edge:-edge]
+        # The map gives the navigation axes, then the delay time and the wait time.
+        # Move the wait time (index n_nav + 1) to the end of the navigation axes,
+        # leaving the delay time as the signal axis.
+        n_nav = len(self.axes_manager.navigation_shape)
+        c2_signal = c2_signal.transpose(
+            navigation_axes=list(range(n_nav)) + [n_nav + 1]
+        )
+        # The filter is unreliable within size // 2 of either end of the wait time,
+        # so trim those points. A size of 1 does not filter anything, and
+        # `edge:-edge` would be an empty slice for edge = 0.
+        edge = 0 if size is None else size // 2
+        if edge > 0:
+            c2_signal = c2_signal.inav[(slice(None),) * n_nav + (slice(edge, -edge),)]
         c2_signal.set_signal_type("otcf")
         return c2_signal
 
