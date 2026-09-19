@@ -122,7 +122,7 @@ class OneTimeCorrelationFunction(Diffraction1D):
         axes[-1].axhline(y=0, color='black', linestyle=':')
         return fig, axes
 
-    def fit_g2_decay(self, tau_int: float, mask: np.ndarray | None = None, y_err: Optional["OneTimeCorrelationFunction"] = None) -> "OneTimeCorrelationFunction":
+    def fit_g2_decay(self, tau_int: float, mask: Optional[np.ndarray] = None, y_err: Optional["OneTimeCorrelationFunction"] = None) -> "OneTimeCorrelationFunction":
         """
         Fit the one-time correlation function using the G2 decay model. Recommend normalizing the signal before fitting.
 

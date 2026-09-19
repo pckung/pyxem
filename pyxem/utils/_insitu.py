@@ -22,7 +22,7 @@ import numpy as np
 import scipy.ndimage as ndi
 import scipy.signal as ss
 from scipy.ndimage import uniform_filter
-from typing import Literal
+from typing import Literal, Optional, Union
 
 
 def _register_drift_5d(data, shifts1, shifts2, order=1):
@@ -231,9 +231,9 @@ def _interpolate_g2_1d(g2, t_rs, dt):
 
 def _bkg_calc(
     data: np.ndarray,
-    axis: list | int,
-    local_axis: list | int | None = None,
-    local_size: list | int | None = None,
+    axis: Union[list, int],
+    local_axis: Optional[Union[list, int]] = None,
+    local_size: Optional[Union[list, int]] = None,
     center: Literal["mean", "median"] = "mean",
     **kwargs,
 ):
@@ -288,7 +288,9 @@ def _bkg_calc(
         bkg = uniform_filter(bkg, size=filter_size, **kwargs)
     return bkg
 
-def _cap_intensity(data: np.ndarray, cap_std: float, axis: int | list | None = None) -> np.ndarray:
+def _cap_intensity(
+    data: np.ndarray, cap_std: float, axis: Optional[Union[int, list]] = None
+) -> np.ndarray:
     """Cap the intensity of the data at a specified number of standard deviations above the mean.
 
     Parameters
@@ -350,7 +352,7 @@ def _ttcf_2_g2(data: np.ndarray) -> np.ndarray:
         
     return g2
 
-def _ttcf_2_c2(data, window: int = 100, size: int | None = None) -> np.ndarray:
+def _ttcf_2_c2(data, window: int = 100, size: Optional[int] = None) -> np.ndarray:
     """Convert a two-time correlation function (ttcf) to a series of c2 windows.
     
     Parameters

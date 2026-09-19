@@ -406,7 +406,7 @@ class InSituDiffraction2D(Diffraction2D):
     def expected_intensity(
             self,
             method: Literal["t", "k", "custom"] = "t",
-            custom_axes: dict | None = None,
+            custom_axes: Optional[dict] = None,
             chunk_optimize: bool = False,
             center: Literal["mean", "median"] = "mean",
             **kwargs

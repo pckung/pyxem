@@ -49,7 +49,7 @@ class TwoTimeCorrelationFunction(Diffraction2D):
         g2_signal.set_signal_type("otcf")
         return g2_signal
 
-    def get_c2(self, window: int = 100, size: int | None = None) -> "OneTimeCorrelationFunction":
+    def get_c2(self, window: int = 100, size: Optional[int] = None) -> "OneTimeCorrelationFunction":
         """Return the c2 two-time correlation function as a 1D signal along the Delta t axis.
         
         Parameters
