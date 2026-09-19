@@ -21,7 +21,15 @@ import numpy as np
 import hyperspy.api as hs
 
 from hyperspy.signals import Signal1D
-from pyxem.signals import InSituDiffraction2D, TwoTimeCorrelationFunction, InSituPolarDiffraction2D, LazyInSituPolarDiffraction2D
+from pyxem.signals import (
+    Diffraction2D,
+    InSituDiffraction2D,
+    InSituPolarDiffraction2D,
+    LazyInSituPolarDiffraction2D,
+    LazyTwoTimeCorrelationFunction,
+    TwoTimeCorrelationFunction,
+)
+from pyxem.signals.insitu_diffraction2d import LazyInSituDiffraction2D, _compute_ttcf
 
 
 class TestTimeSeriesReconstruction:
@@ -251,6 +259,69 @@ class TestCorrelation:
         assert ttcf.axes_manager.signal_axes[0].units == ttcf.axes_manager.signal_axes[1].units
         assert ttcf.axes_manager.signal_axes[0].offset == insitu_data.axes_manager.navigation_axes[2].offset
 
+class TestGetTTCF:
+    @pytest.fixture
+    def insitu_data(self):
+        # (time, y, x, ky, kx) with a time axis that has non-default metadata
+        data = np.random.default_rng(seed=0).random((6, 3, 4, 5, 5)) + 1.0
+        s = InSituDiffraction2D(data)
+        time_axis = s.axes_manager.navigation_axes[2]
+        time_axis.name = "Time"
+        time_axis.scale = 0.5
+        time_axis.units = "s"
+        time_axis.offset = 2.0
+        return s
+
+    def test_compute_ttcf(self):
+        data = np.random.default_rng(seed=1).random((4, 3, 2))
+        expected = np.array(
+            [[np.mean(data[i] * data[j]) for j in range(4)] for i in range(4)]
+        )
+        np.testing.assert_allclose(_compute_ttcf(data), expected)
+
+    def test_values(self, insitu_data):
+        ttcf = insitu_data.get_TTCF()
+        raw = insitu_data.data
+        # <I(t1) I(t2)> averaged over the diffraction pixels, at each real-space position
+        expected = np.einsum("tyxab,uyxab->yxtu", raw, raw) / (
+            raw.shape[-1] * raw.shape[-2]
+        )
+        assert ttcf.data.shape == (3, 4, 6, 6)
+        np.testing.assert_allclose(ttcf.data, expected)
+        np.testing.assert_allclose(ttcf.data, np.swapaxes(ttcf.data, -1, -2))
+
+    def test_axes_copy_the_time_axis(self, insitu_data):
+        ttcf = insitu_data.get_TTCF()
+        assert ttcf.axes_manager.navigation_shape == (4, 3)
+        for axis in ttcf.axes_manager.signal_axes:
+            assert axis.name == "Time"
+            assert axis.scale == 0.5
+            assert axis.units == "s"
+            assert axis.offset == 2.0
+
+    def test_time_axis_not_at_index_2(self, insitu_data):
+        rolled = insitu_data.rollaxis(2, 0)
+        assert rolled.axes_manager.navigation_axes[0].name == "Time"
+        np.testing.assert_allclose(rolled.get_TTCF().data, insitu_data.get_TTCF().data)
+
+    def test_input_not_modified(self, insitu_data):
+        original = insitu_data.data.copy()
+        insitu_data.get_TTCF()
+        np.testing.assert_array_equal(insitu_data.data, original)
+        assert type(insitu_data) is InSituDiffraction2D
+
+    def test_lazy(self, insitu_data):
+        lazy = insitu_data.as_lazy().get_TTCF()
+        assert isinstance(lazy, LazyTwoTimeCorrelationFunction)
+        lazy.compute()
+        np.testing.assert_allclose(lazy.data, insitu_data.get_TTCF().data)
+
+    def test_missing_time_axis(self):
+        s = InSituDiffraction2D(np.ones((4, 2, 2, 3, 3)))
+        with pytest.raises(ValueError, match="Time axis not found"):
+            s.get_TTCF()
+
+
 class TestExpectedIntensity:
     @pytest.fixture
     def insitu_data(self):
@@ -263,6 +334,80 @@ class TestExpectedIntensity:
             gradient[i] += i-1
         dc.data += gradient
         return dc
+
+    @pytest.fixture
+    def random_data(self):
+        # (time, y, x, ky, kx) with non-default axis metadata
+        data = np.random.default_rng(seed=0).random((6, 3, 4, 5, 5)) + 1.0
+        s = InSituDiffraction2D(data)
+        time_axis = s.axes_manager.navigation_axes[2]
+        time_axis.name, time_axis.scale, time_axis.units = "Time", 0.5, "s"
+        for name, axis in zip(["kx", "ky"], s.axes_manager.signal_axes):
+            axis.name, axis.scale = name, 0.1
+        return s
+
+    def test_center_median(self):
+        # one outlier in time moves the mean but not the median
+        data = np.zeros((5, 2, 2, 3, 3))
+        data[4] = 10.0
+        s = InSituDiffraction2D(data)
+        s.axes_manager.navigation_axes[2].name = "Time"
+        np.testing.assert_allclose(s.expected_intensity(method="t").data, 2.0)
+        np.testing.assert_allclose(
+            s.expected_intensity(method="t", center="mean").data, 2.0
+        )
+        np.testing.assert_allclose(
+            s.expected_intensity(method="t", center="median").data, 0.0
+        )
+
+    @pytest.mark.parametrize("method", ["t", "k"])
+    def test_time_axis_not_at_index_2(self, random_data, method):
+        rolled = random_data.rollaxis(2, 0)
+        assert rolled.axes_manager.navigation_axes[0].name == "Time"
+        np.testing.assert_allclose(
+            rolled.expected_intensity(method=method).data,
+            random_data.expected_intensity(method=method).data,
+        )
+
+    def test_axes_metadata_preserved(self, random_data):
+        out = random_data.expected_intensity(method="t")
+        assert out.data.shape == random_data.data.shape
+        assert out.axes_manager.navigation_shape == (
+            random_data.axes_manager.navigation_shape
+        )
+        time_axis = out.axes_manager.navigation_axes[2]
+        assert (time_axis.name, time_axis.scale, time_axis.units) == ("Time", 0.5, "s")
+        for axis in out.axes_manager.signal_axes:
+            assert axis.scale == 0.1
+        assert [a.name for a in out.axes_manager.signal_axes] == ["kx", "ky"]
+
+    def test_input_not_modified(self, random_data):
+        original = random_data.data.copy()
+        random_data.expected_intensity(method="t")
+        np.testing.assert_array_equal(random_data.data, original)
+
+    @pytest.mark.parametrize(
+        "method, custom_axes",
+        [
+            ("t", None),
+            ("k", None),
+            ("custom", {"full_axis": [1]}),
+            ("custom", {"local_axis": [1], "local_size": 3}),
+        ],
+    )
+    def test_lazy_matches_eager(self, random_data, method, custom_axes):
+        eager = random_data.expected_intensity(method=method, custom_axes=custom_axes)
+        lazy = random_data.as_lazy().expected_intensity(
+            method=method, custom_axes=custom_axes
+        )
+        assert isinstance(lazy, LazyInSituDiffraction2D)
+        lazy.compute()
+        np.testing.assert_allclose(lazy.data, eager.data)
+
+    def test_missing_time_axis(self):
+        s = InSituDiffraction2D(np.ones((4, 2, 2, 3, 3)))
+        with pytest.raises(ValueError, match="Time axis not found"):
+            s.expected_intensity(method="t")
 
     def test_expected_intensity_invalid_inputs(self, insitu_data):
         # Test missing custom_axes for 'custom' method
@@ -350,3 +495,32 @@ class TestAzimuthalIntegration:
             assert isinstance(target_obj, InSituPolarDiffraction2D)
             
         assert target_obj._signal_type == "insitu_polar"
+    @pytest.mark.parametrize("lazy", [True, False])
+    def test_azimuthal_integral2d_values(self, insitu_data, lazy):
+        # the override must only change the signal type, not the integration
+        kwargs = dict(npt=3, radial_range=(0, 0.3))
+        reference = Diffraction2D.get_azimuthal_integral2d(insitu_data, **kwargs)
+        data = insitu_data.as_lazy() if lazy else insitu_data
+        out = data.get_azimuthal_integral2d(**kwargs)
+        if lazy:
+            out.compute()
+        np.testing.assert_allclose(out.data, reference.data, equal_nan=True)
+        assert out.axes_manager.navigation_shape == (
+            insitu_data.axes_manager.navigation_shape
+        )
+        assert out.axes_manager.signal_shape == reference.axes_manager.signal_shape
+
+    def test_azimuthal_integral2d_does_not_modify_input(self, insitu_data):
+        original = insitu_data.data.copy()
+        insitu_data.get_azimuthal_integral2d(npt=3, radial_range=(0, 0.3))
+        np.testing.assert_array_equal(insitu_data.data, original)
+        assert type(insitu_data) is InSituDiffraction2D
+
+    def test_azimuthal_integral2d_inplace_values(self, insitu_data):
+        kwargs = dict(npt=3, radial_range=(0, 0.3))
+        reference = Diffraction2D.get_azimuthal_integral2d(insitu_data, **kwargs)
+        insitu_data.get_azimuthal_integral2d(inplace=True, **kwargs)
+        np.testing.assert_allclose(insitu_data.data, reference.data, equal_nan=True)
+        assert (
+            insitu_data.axes_manager.signal_shape == reference.axes_manager.signal_shape
+        )
