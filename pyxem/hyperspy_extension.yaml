@@ -311,6 +311,18 @@ signals:
     dtype: real
     lazy: True
     module: pyxem.signals.one_time_correlation_function
+  DifferentialDiffraction2D:
+    signal_type: differential_diffraction
+    signal_dimension: 2
+    dtype: real
+    lazy: False
+    module: pyxem.signals.differential_diffraction2d
+  LazyDifferentialDiffraction2D:
+    signal_type: differential_diffraction
+    signal_dimension: 2
+    dtype: real
+    lazy: True
+    module: pyxem.signals.differential_diffraction2d
 
 components1D:
     ReducedIntensityCorrectionComponent:

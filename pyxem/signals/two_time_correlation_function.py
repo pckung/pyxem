@@ -64,10 +64,6 @@ class TwoTimeCorrelationFunction(Diffraction2D):
         "OneTimeCorrelationFunction"
             The extracted c2 windows as a 1D signal.
         """
-        if size is not None:
-            edge = size // 2
-        else:
-            edge = 0     
         c2_signal = self.map(_ttcf_2_c2, inplace=False, window=window, size=size)
         tax = self.axes_manager.signal_axes[0]
         ax_name = ["Delay Time", "Wait Time"]
@@ -77,8 +73,18 @@ class TwoTimeCorrelationFunction(Diffraction2D):
             ax.scale = tax.scale
             ax.offset = tax.offset
 
-        c2_signal = c2_signal.transpose(navigation_axes=(0,1,3))
-        c2_signal = c2_signal.inav[:,:,edge:-edge]
+        navigation_shape = self.axes_manager.navigation_shape
+        navigation_axes_len = len(navigation_shape)
+        if navigation_axes_len > 0:
+            c2_signal = c2_signal.transpose(navigation_axes=[0,1,3])
+        else:
+            c2_signal = c2_signal.transpose(navigation_axes=[1])
+        if size is not None:
+            edge = size // 2
+            if navigation_axes_len > 0:
+                c2_signal = c2_signal.inav[:,:,edge:-edge]
+            else:
+                c2_signal = c2_signal.inav[edge:-edge]
         c2_signal.set_signal_type("otcf")
         return c2_signal
 

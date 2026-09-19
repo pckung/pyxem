@@ -53,6 +53,7 @@ from .insitu_diffraction2d import InSituDiffraction2D
 from .insitu_polar_diffraction2d import InSituPolarDiffraction2D, LazyInSituPolarDiffraction2D
 from .two_time_correlation_function import TwoTimeCorrelationFunction, LazyTwoTimeCorrelationFunction
 from .one_time_correlation_function import OneTimeCorrelationFunction, LazyOneTimeCorrelationFunction
+from .differential_diffraction2d import DifferentialDiffraction2D
 from .labeled_diffraction_vectors2d import LabeledDiffractionVectors2D
 
 
@@ -99,6 +100,8 @@ __all__ = [
     "DisplacementGradientMap",
     "VirtualDarkFieldImage",
     "InSituDiffraction2D",
+    "DifferentialDiffraction2D",
+    "LazyDifferentialDiffraction2D",
     "LabeledDiffractionVectors2D",
     "OrientationMap",
     "TwoTimeCorrelationFunction",

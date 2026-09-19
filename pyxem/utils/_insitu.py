@@ -249,6 +249,8 @@ def _bkg_calc(
         The axis or axes along which to apply a local uniform filter, by default None.
     local_size : int, optional
         The size of the local uniform filter, by default 3.
+    center : Literal["mean", "median"], optional
+        The method to use for calculating the background. "mean" uses the mean, while "median" uses the median. By default, it is set to "mean".
     **kwargs : dict
         Additional keyword arguments passed to the filtering function.
 
@@ -285,6 +287,41 @@ def _bkg_calc(
             filter_size[ax] = sz
         bkg = uniform_filter(bkg, size=filter_size, **kwargs)
     return bkg
+
+def _cap_intensity(data: np.ndarray, cap_std: float, axis: int | list | None = None) -> np.ndarray:
+    """Cap the intensity of the data at a specified number of standard deviations above the mean.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        The input data array.
+    cap_std : float
+        The number of standard deviations above the mean to cap the intensity.
+    axis : int | None, optional
+        The axis along which to calculate the mean and standard deviation. If None, the mean and standard deviation are calculated over the entire array. Default is None.
+
+    Returns
+    -------
+    np.ndarray
+        The data array with intensities capped at the specified threshold.
+    """
+    if axis is None:
+        mean = np.nanmean(data)
+        std = np.nanstd(data)
+    else:
+        if isinstance(axis, int):
+            axis = [axis]
+        mean = np.nanmean(data, axis=tuple(axis), keepdims=True)
+        std = np.nanstd(data, axis=tuple(axis), keepdims=True)
+    
+    threshold = mean + cap_std * std
+    capped_data = np.where(data > threshold, threshold, data)
+
+    threshold_low = mean - cap_std * std
+    capped_data = np.where(capped_data < threshold_low, threshold_low, capped_data)
+    
+    return capped_data
+
 
 def _find_time_axis(signal, nav=True) -> int:
         time_axis_names = ["time", "t", "Time", "T"]

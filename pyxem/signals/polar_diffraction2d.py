@@ -492,10 +492,14 @@ class PolarDiffraction2D(CommonDiffraction, Signal2D):
         from skimage.filters import sobel, threshold_otsu
         from skimage.morphology import binary_dilation, disk
 
-        if start_point is None:
-            start_point = [0, 0]
+        
 
         avg_dp = self.mean(axis='nav').data
+        dp_shape = avg_dp.shape
+        
+        if start_point is None:
+            start_point = [dp_shape[0] // 2, dp_shape[1] // 2]
+
         # check if avg_dp is dask array and compute if necessary
         if hasattr(avg_dp, "compute"):
             avg_dp = avg_dp.compute()

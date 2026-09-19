@@ -82,6 +82,8 @@ from pyxem.utils._deprecated import extend_docs
 
 from pyxem import CUPY_INSTALLED
 
+from pyxem.utils._flucor import _spatial_local_bkg_calc, _log_bkg_removal
+
 if CUPY_INSTALLED:
     import cupy as cp
 
@@ -90,6 +92,7 @@ if TYPE_CHECKING:
     from pyxem.signals.diffraction1d import Diffraction1D
     from pyxem.signals.polar_diffraction2d import PolarDiffraction2D
     from pyxem.signals.diffraction_vectors import DiffractionVectors
+    from pyxem.signals.differential_diffraction2d import DifferentialDiffraction2D
 
 
 class Diffraction2D(CommonDiffraction, Signal2D):
@@ -2167,6 +2170,35 @@ class Diffraction2D(CommonDiffraction, Signal2D):
         s.axes_manager.set_axis(t_axis, -1)
 
         return integration
+
+    def get_differential_diffraction(
+            self,
+            inner_cutoff: int = 3,
+            outer_cutoff: int = 7,
+            mode: str = "mirror",
+    ) -> "DifferentialDiffraction2D":
+        """Get the differential diffuse-scattering signals by log-subtracting the local matrix signals
+        
+        Parameters
+        ----------
+        inner_cutoff : int
+            The inner cutoff radius for the local matrix signals. Default is 3. Area inside the inner cutoff is excluded from the local matrix signals.
+        outer_cutoff : int
+            The outer cutoff radius for the local matrix signals. Default is 7. Area outside the outer cutoff is excluded from the local matrix signals.
+        mode : str, optional
+            The mode parameter determines how the input array is extended when the filter overlaps a border. Options include 'reflect', 'constant', 'nearest', 'mirror', and 'wrap'. By default, it is set to 'mirror'.
+        
+        Returns
+        -------
+        DifferentialDiffraction2D
+            A new signal containing the differential diffuse-scattering signals.
+        """
+        s = self.T
+        s_matrix = s.map(_spatial_local_bkg_calc, inner_cutoff=inner_cutoff, outer_cutoff=outer_cutoff, mode='mirror', inplace=False)
+        s_diff = s.map(_log_bkg_removal, bkg=s_matrix, inplace=False)
+        s_diff = s_diff.T
+        s_diff.set_signal_type("differential_diffraction")
+        return s_diff
 
 
 class LazyDiffraction2D(LazySignal, Diffraction2D):
