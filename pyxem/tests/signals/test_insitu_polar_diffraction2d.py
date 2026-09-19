@@ -102,6 +102,52 @@ class TestExpectedPolarIntensity:
             out.data[..., half:-half], self._sliding_mean(base, window)
         )
 
+    @pytest.mark.parametrize("local_azi_angle, window", [(35.0, 3), (65.0, 7)])
+    @pytest.mark.parametrize("method", ["tazi_local", "azi_local"])
+    def test_local_methods_are_periodic(
+        self, insitu_data, method, local_azi_angle, window
+    ):
+        # every azimuthal pixel, including the first and last, is averaged with its
+        # neighbours on both sides of the 0/360 degree seam
+        data = insitu_data.data
+        base = data.mean(axis=0, keepdims=True) if method == "tazi_local" else data
+        base = np.broadcast_to(base, data.shape)
+        half = window // 2
+        padded = np.concatenate([base[..., -half:], base, base[..., :half]], axis=-1)
+        out = insitu_data.expected_polar_intensity(
+            method=method, local_azi_angle=local_azi_angle
+        )
+        np.testing.assert_allclose(out.data, self._sliding_mean(padded, window))
+
+    @pytest.mark.parametrize("method", ["tazi_local", "azi_local"])
+    def test_local_methods_spread_an_impulse_across_the_seam(self, method):
+        data = np.zeros((5, 2, 3, 4, self.n_azi))
+        data[..., 0] = 1.0
+        s = InSituPolarDiffraction2D(data)
+        s.axes_manager.navigation_axes[2].name = "Time"
+        out = s.expected_polar_intensity(method=method, local_azi_angle=65.0)
+        # a window of 7 pixels: 3 either side of azimuthal pixel 0, wrapping round
+        expected = np.zeros(self.n_azi)
+        expected[[-3, -2, -1, 0, 1, 2, 3]] = 1 / 7
+        np.testing.assert_allclose(out.data, np.broadcast_to(expected, out.data.shape))
+
+    @pytest.mark.parametrize("shift", [1, 5, 17])
+    @pytest.mark.parametrize("method", ["tazi_local", "azi_local"])
+    def test_local_methods_commute_with_azimuthal_rotation(
+        self, insitu_data, method, shift
+    ):
+        # rotating the pattern rotates the result, wherever the seam falls
+        rotated = insitu_data.deepcopy()
+        rotated.data = np.roll(insitu_data.data, shift, axis=-1)
+        np.testing.assert_allclose(
+            rotated.expected_polar_intensity(method=method).data,
+            np.roll(
+                insitu_data.expected_polar_intensity(method=method).data,
+                shift,
+                axis=-1,
+            ),
+        )
+
     def test_default_arguments(self, insitu_data):
         default = insitu_data.expected_polar_intensity()
         explicit = insitu_data.expected_polar_intensity(

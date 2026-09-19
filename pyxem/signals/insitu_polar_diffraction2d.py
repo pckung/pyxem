@@ -61,7 +61,7 @@ class InSituPolarDiffraction2D(PolarDiffraction2D, InSituDiffraction2D):
             The method to use for calculating the expected intensity.
             The "tazi_local" method calculates the expected intensity using the time axis and a local azimuthal angle, "tazi" uses the full azimuthal axis, "azi" uses the azimuthal axis, "azi_local" uses a local azimuthal angle, "t" uses the time axis, and "k" uses all non-time axes.
         local_azi_angle : float, default=60.0
-            The local azimuthal angle in degrees for the "tazi_local" method.
+            The local azimuthal angle in degrees for the "tazi_local" and "azi_local" methods. The azimuthal axis is periodic, so the local average wraps around the 0/360 degree seam.
         chunk_optimize : bool, default=False
             Whether to optimize the chunking of the signal for computation after initial transpose of the signal. This can improve performance for large lazy datasets if the chunking is not optimize to iterate over the spatial axes.
         center : Literal["mean", "median"], default="mean"
@@ -111,7 +111,9 @@ class InSituPolarDiffraction2D(PolarDiffraction2D, InSituDiffraction2D):
         else:
             raise ValueError("Method must be one of 'tazi_local', 'tazi', 't', 'k', 'azi_local', or 'azi'.")
 
-        return self.expected_intensity(method=_method, custom_axes=custom_axes, chunk_optimize=chunk_optimize, center=center)
+        # The azimuthal axis is periodic, so the local filter wraps around it. The
+        # mode only affects the "tazi_local" and "azi_local" methods.
+        return self.expected_intensity(method=_method, custom_axes=custom_axes, chunk_optimize=chunk_optimize, center=center, mode="wrap")
         
 
 
