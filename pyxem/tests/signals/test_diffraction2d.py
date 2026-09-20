@@ -1458,6 +1458,87 @@ class TestGetDifferentialDiffraction:
         np.testing.assert_allclose(lazy.data, eager.data)
 
 
+class TestDifferentialDiffraction2DFluctuationAndCorrelationMaps:
+    @pytest.fixture()
+    def signal(self):
+        data = default_rng(seed=0).random((4, 5, 3, 3))
+        return DifferentialDiffraction2D(data)
+
+    def test_fluctuation_map_output_type_and_axes(self, signal):
+        out = signal.get_fluctuation_map()
+        assert isinstance(out, DifferentialDiffraction2D)
+        assert out.axes_manager.navigation_shape == ()
+        assert out.axes_manager.signal_shape == signal.axes_manager.signal_shape
+
+    def test_fluctuation_map_values(self, signal):
+        out = signal.get_fluctuation_map()
+        expected = np.var(signal.data, axis=(0, 1))
+        np.testing.assert_allclose(out.data, expected)
+
+    def test_fluctuation_map_input_not_modified(self, signal):
+        original = signal.data.copy()
+        signal.get_fluctuation_map()
+        np.testing.assert_array_equal(signal.data, original)
+
+    def test_fluctuation_map_lazy(self, signal):
+        eager = signal.get_fluctuation_map()
+        lazy = signal.as_lazy().get_fluctuation_map()
+        assert isinstance(lazy, LazyDifferentialDiffraction2D)
+        lazy.compute()
+        np.testing.assert_allclose(lazy.data, eager.data)
+
+    @staticmethod
+    def _expected_correlation_map(data, ref_mask):
+        ref_vdf = np.nanmean(data[:, :, ref_mask], axis=-1)
+        ny, nx = data.shape[-2:]
+        expected = np.empty((ny, nx))
+        for i in range(ny):
+            for j in range(nx):
+                expected[i, j] = np.corrcoef(
+                    data[:, :, i, j].flatten(), ref_vdf.flatten()
+                )[0, 1]
+        return expected
+
+    def test_correlation_map_output_type_and_axes(self, signal):
+        ref_mask = np.zeros(signal.axes_manager.signal_shape, dtype=bool)
+        ref_mask[0, 0] = True
+        out = signal.get_correlation_map(ref_mask)
+        assert isinstance(out, DifferentialDiffraction2D)
+        assert out.axes_manager.navigation_shape == ()
+        assert out.axes_manager.signal_shape == signal.axes_manager.signal_shape
+
+    def test_correlation_map_values(self, signal):
+        ref_mask = np.zeros(signal.axes_manager.signal_shape, dtype=bool)
+        ref_mask[0, 0] = True
+        ref_mask[1, 1] = True
+        out = signal.get_correlation_map(ref_mask)
+        expected = self._expected_correlation_map(signal.data, ref_mask)
+        np.testing.assert_allclose(out.data, expected)
+
+    def test_correlation_map_perfect_self_correlation(self, signal):
+        # correlating the mask's own pixel against itself gives 1.0
+        ref_mask = np.zeros(signal.axes_manager.signal_shape, dtype=bool)
+        ref_mask[0, 0] = True
+        out = signal.get_correlation_map(ref_mask)
+        np.testing.assert_allclose(out.data[0, 0], 1.0)
+
+    def test_correlation_map_input_not_modified(self, signal):
+        ref_mask = np.zeros(signal.axes_manager.signal_shape, dtype=bool)
+        ref_mask[0, 0] = True
+        original = signal.data.copy()
+        signal.get_correlation_map(ref_mask)
+        np.testing.assert_array_equal(signal.data, original)
+
+    def test_correlation_map_lazy(self, signal):
+        ref_mask = np.zeros(signal.axes_manager.signal_shape, dtype=bool)
+        ref_mask[0, 0] = True
+        eager = signal.get_correlation_map(ref_mask)
+        lazy = signal.as_lazy().get_correlation_map(ref_mask)
+        assert isinstance(lazy, LazyDifferentialDiffraction2D)
+        lazy.compute()
+        np.testing.assert_allclose(lazy.data, eager.data)
+
+
 class TestFindHotPixels:
     @pytest.fixture()
     def hot_pixel_data(self):
